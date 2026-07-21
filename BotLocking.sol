@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -7,6 +7,11 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 
 import { IVesting } from "./interfaces/IVesting.sol";
 
+/// @title BotLocking
+/// @notice Lock-and-reward contract with referral system and SVT bonus vesting.
+/// @dev `paymentToken` is immutable and must be a standard non-fee, non-rebasing BEP-20 token
+///      (e.g. BSC USDT) chosen by the trusted deployer. See `paymentToken` and the deploy checklist
+///      in the project README before wiring a token address.
 contract BotLocking is ReentrancyGuard {
     using SafeERC20 for IERC20Metadata;
 
@@ -22,6 +27,7 @@ contract BotLocking is ReentrancyGuard {
     error NoReferralReward();
     error NoRewardsToClaim();
     error InsufficientFunds();
+    error ZeroAddress();
 
     /// @notice Number of available investment plans.
     uint256 public constant PLAN_COUNT = 4;
@@ -34,6 +40,12 @@ contract BotLocking is ReentrancyGuard {
     /// @notice Number of seconds in the accounting year.
     uint256 public constant YEAR_IN_SECONDS = 365 days;
     /// @notice ERC20 token used for all contract payments.
+    /// @dev Supported-token constraint: must be a standard BEP-20 with no transfer fees and no
+    ///      rebasing. `invest()` and `deposit()` credit `contractTokenAmount` by the requested
+    ///      `amount`, not by a post-transfer balance delta. Fee-on-transfer or rebasing tokens
+    ///      would overstate internal liquidity and cause legitimate withdrawals to revert with
+    ///      `InsufficientFunds`. Fixed at deploy to non-fee, non-rebasing BEP-20 USDT per the
+    ///      trusted deployer model.
     IERC20Metadata public immutable paymentToken;
     /// @notice SVT vesting contract.
     IVesting public immutable svtVesting;
@@ -147,7 +159,7 @@ contract BotLocking is ReentrancyGuard {
     event Deposited(address indexed wallet, uint256 amount);
 
     /// @notice Initializes token addresses, plan settings and referral shares.
-    /// @param _paymentToken ERC20 payment token.
+    /// @param _paymentToken Standard non-fee, non-rebasing BEP-20 payment token (see `paymentToken`).
     /// @param _svtVesting SVT vesting contract.
     /// @param _provider Provider wallet.
     /// @param _developer Developer wallet.
@@ -159,6 +171,13 @@ contract BotLocking is ReentrancyGuard {
         address _developer,
         address _treasury
     ) {
+        if (
+            address(_paymentToken) == address(0) ||
+            address(_svtVesting) == address(0) ||
+            _provider == address(0) ||
+            _developer == address(0) ||
+            _treasury == address(0)
+        ) revert ZeroAddress();
         paymentToken = _paymentToken;
         svtVesting = _svtVesting;
         provider = _provider;
@@ -410,6 +429,8 @@ contract BotLocking is ReentrancyGuard {
     }
 
     /// @notice Invests funds into an activated plan.
+    /// @dev Credits `contractTokenAmount` by the requested `amount` (half retained on contract);
+    ///      requires `paymentToken` to deliver exactly `amount` on transfer (see `paymentToken`).
     /// @param amount Investment amount.
     /// @param planIndex Activated plan index.
     function invest(uint256 amount, uint256 planIndex) public nonReentrant {
@@ -489,6 +510,8 @@ contract BotLocking is ReentrancyGuard {
     }
 
     /// @notice Deposits extra liquidity.
+    /// @dev Credits `contractTokenAmount` by the requested `amount`; requires `paymentToken` to
+    ///      deliver exactly `amount` on transfer (see `paymentToken`).
     /// @param amount Amount to deposit.
     function deposit(uint256 amount) public nonReentrant {
         paymentToken.safeTransferFrom(msg.sender, address(this), amount);
@@ -524,6 +547,8 @@ contract BotLocking is ReentrancyGuard {
         uint256 monthlyReturnBps = _plans[planIndex].monthlyReturnBps;
         uint256 currentTimestamp = block.timestamp;
         uint256 secondsSinceStart = currentTimestamp - startTimestamp;
+        uint256 lockDuration = _plans[planIndex].lockDuration;
+        if (secondsSinceStart > lockDuration) secondsSinceStart = lockDuration;
         reward = amount * monthlyReturnBps * secondsSinceStart / (PCT_BASE * MONTH_IN_SECONDS);
     }
 
