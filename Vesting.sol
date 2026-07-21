@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -26,6 +26,15 @@ contract Vesting is Ownable2Step {
 
     /// @notice Error thrown when caller is not the configured `botLocking` contract
     error OnlyBotLocking();
+
+    /// @notice Error thrown when there is nothing to release
+    error NothingToRelease();
+
+    /// @notice Error thrown when there are insufficient tokens to recover
+    error InsufficientTokens();
+
+    /// @notice Error thrown when the contract is not fully distributed
+    error NotFullyDistributed();
 
     /**
      * @dev Struct containing vesting information for each beneficiary
@@ -54,6 +63,9 @@ contract Vesting is Ownable2Step {
     /// @notice Sum of all tokens allocated via created schedules
     uint256 public totalDistributedTokens;
 
+    /// @notice Sum of all tokens released from vesting schedules
+    uint256 public totalReleasedTokens;
+
     /// @notice Vesting duration constant: 1 year (365 days, expressed in seconds)
     uint256 private constant _duration = 365 days; // 1 year
 
@@ -69,6 +81,22 @@ contract Vesting is Ownable2Step {
     /// @param amount The amount of tokens released
     event VestingReleased(address beneficiary, uint256 amount);
 
+    /// @notice Emitted when surplus tokens are recovered
+    /// @param to The address to transfer the surplus tokens to
+    /// @param amount The amount of tokens recovered
+    event SurplusRecovered(address to, uint256 amount);
+
+    /// @notice Emitted when the airdrop pool is exhausted
+    /// @param beneficiary The address of the beneficiary
+    /// @param requested The amount of tokens requested
+    event AirdropPoolExhausted(address indexed beneficiary, uint256 requested);
+
+    /// @notice Emitted when the airdrop pool is partially allocated
+    /// @param beneficiary The address of the beneficiary
+    /// @param requested The amount of tokens requested
+    /// @param allocated The amount of tokens allocated
+    event AirdropPoolPartiallyAllocated(address indexed beneficiary, uint256 requested, uint256 allocated);
+
     /**
      * @dev Initializes the Vesting contract
      * @param _svt The ERC20 token that will be vested and released to beneficiaries
@@ -78,6 +106,21 @@ contract Vesting is Ownable2Step {
         if (address(_svt) == address(0)) revert ZeroAddress();
         svt = _svt;
     }
+
+    /// @notice Recover SVT held above the outstanding (allocated-but-unreleased) obligation.
+    /// @dev Can only be called by the owner when the contract is fully distributed.
+    /// @param to The address to transfer the surplus tokens to
+    /// @param amount The amount of tokens to transfer
+    /// @notice Reverts if the contract is not fully distributed or if there are insufficient tokens to recover.
+    function recoverSurplus(address to, uint256 amount) external onlyOwner {
+        if (totalDistributedTokens != MAX_AIRDROP_POOL) revert NotFullyDistributed();
+        uint256 outstanding = totalDistributedTokens - totalReleasedTokens;
+        uint256 surplus = svt.balanceOf(address(this)) < outstanding ? 0 : svt.balanceOf(address(this)) - outstanding;
+        if (amount > surplus) revert InsufficientTokens();
+        svt.safeTransfer(to, amount);
+        emit SurplusRecovered(to, amount);
+    }
+
 
     /**
      * @notice Returns the number of vesting schedules for a beneficiary
@@ -170,7 +213,9 @@ contract Vesting is Ownable2Step {
     function release(uint256 vestingIndex) public virtual {
         address beneficiary = msg.sender;
         uint256 amount = releasable(beneficiary, vestingIndex);
+        if (amount == 0) revert NothingToRelease();
         vestingSchedules[beneficiary][vestingIndex].released += amount;
+        totalReleasedTokens += amount;
         emit VestingReleased(beneficiary, amount);
         svt.safeTransfer(beneficiary, amount);
     }
@@ -202,11 +247,15 @@ contract Vesting is Ownable2Step {
         uint256 vestingIndex = vestingSchedules[beneficiary].length;
         if (amount == 0) revert ZeroAmount();
         if (beneficiary == address(0)) revert ZeroAddress();
-        if (totalDistributedTokens == MAX_AIRDROP_POOL) return;
+        if (totalDistributedTokens == MAX_AIRDROP_POOL) {
+            emit AirdropPoolExhausted(beneficiary, amount);
+            return;
+        }
 
         uint256 amountToAllocate = amount;
         if (totalDistributedTokens + amount > MAX_AIRDROP_POOL) {
             amountToAllocate = MAX_AIRDROP_POOL - totalDistributedTokens;
+            emit AirdropPoolPartiallyAllocated(beneficiary, amount, amountToAllocate);
         }
         totalDistributedTokens += amountToAllocate;
         vestingSchedules[beneficiary].push(VestingInfo({
