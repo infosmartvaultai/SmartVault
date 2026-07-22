@@ -187,25 +187,25 @@ contract BotLocking is ReentrancyGuard {
         _plans[0] = Plan(
             uint128(MONTH_IN_SECONDS),
             200,
-            2400,
+            5000,
             uint128(100 * 10 ** tokenDecimals)
         );
         _plans[1] = Plan(
             uint128(3 * MONTH_IN_SECONDS),
             400,
-            4800,
+            10000,
             uint128(250 * 10 ** tokenDecimals)
         );
         _plans[2] = Plan(
             uint128(6 * MONTH_IN_SECONDS),
             600,
-            7200,
+            20000,
             uint128(500 * 10 ** tokenDecimals)
         );
         _plans[3] = Plan(
             uint128(YEAR_IN_SECONDS),
             1000,
-            12000,
+            30000,
             uint128(1000 * 10 ** tokenDecimals)
         );
 
